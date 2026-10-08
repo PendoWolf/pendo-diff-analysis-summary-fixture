@@ -53,6 +53,9 @@ export default function App() {
         <button data-testid="btn-refresh" onClick={() => run("refresh", api.getState)}>
           Refresh
         </button>
+        <button data-testid="btn-qaw-summary-1791487226086" onClick={() => run("qaw-summary-1791487226086", api.increment)}>
+          QAW Summary 1791487226086
+        </button>
                     <button data-testid="btn-qaw-summary-1791486826769" onClick={() => run("qaw-summary-1791486826769", api.increment)}>
                       QAW Summary 1791486826769
                     </button>
