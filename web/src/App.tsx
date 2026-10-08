@@ -1,26 +1,85 @@
 import { useEffect, useState } from "react";
-import { api, type AppState } from "./api";
+import { api, ApiError, type AppState } from "./api";
+
+// Actions run() performs. Each success is tracked as "demo-<action>" (demo-load,
+// demo-increment, demo-decrement, demo-reset, demo-refresh) and any failure as
+// "demo-action-failed". Pendo matches these names exactly; don't rename them.
+type Action = "load" | "increment" | "decrement" | "reset" | "refresh";
 
 // Seam for Pendo. Novus installs the Pendo agent, which provides window.pendo
 // at runtime; this fires a Track Event for each action. No-op when the agent
 // isn't present (local dev), so the app and Playwright mocks both stay simple.
-function trackEvent(name: string) {
+function trackEvent(name: Action | "action-failed", props?: Record<string, unknown>) {
   if (typeof window !== "undefined") {
-    window.pendo?.track?.(`demo-${name}`);
+    try {
+      window.pendo?.track?.(`demo-${name}`, props);
+    } catch {
+      // Tracking must never break the app, or make run() report a successful
+      // action as failed.
+    }
   }
+}
+
+// Properties for an action's success event, from the state on screen when the
+// action started (prev) and the server state it returned (next).
+function successProps(action: Action, prev: AppState, next: AppState, hadError: boolean) {
+  switch (action) {
+    case "load":
+      return { counter: next.counter, lastAction: next.lastAction };
+    case "increment":
+    case "decrement":
+      return { counter: next.counter, previousCounter: prev.counter };
+    case "reset":
+      // The new counter is always 0, so describe what was cleared instead.
+      return { previousCounter: prev.counter, previousLastAction: prev.lastAction };
+    case "refresh":
+      return {
+        counter: next.counter,
+        lastAction: next.lastAction,
+        previousCounter: prev.counter,
+        stateChanged: next.counter !== prev.counter || next.lastAction !== prev.lastAction,
+        recoveredFromError: hadError,
+      };
+  }
+}
+
+// StrictMode runs App's mount effect twice in development, so the initial
+// GET /api/state is sent twice. Track the initial load's outcome (demo-load or
+// demo-action-failed) only once per page load. The flag is module-level so it
+// isn't reset if App remounts.
+let initialLoadTracked = false;
+
+function shouldTrack(action: Action) {
+  if (action !== "load") return true;
+  if (initialLoadTracked) return false;
+  initialLoadTracked = true;
+  return true;
 }
 
 export default function App() {
   const [state, setState] = useState<AppState>({ counter: 0, lastAction: "none" });
   const [error, setError] = useState<string | null>(null);
 
-  const run = async (name: string, fn: () => Promise<AppState>) => {
+  const run = async (name: Action, fn: () => Promise<AppState>) => {
+    // What was on screen when the action started, for the event properties.
+    const prev = state;
+    const hadError = error !== null;
     try {
       setError(null);
-      setState(await fn());
-      trackEvent(name);
+      const next = await fn();
+      setState(next);
+      if (shouldTrack(name)) trackEvent(name, successProps(name, prev, next, hadError));
     } catch (e) {
       setError((e as Error).message);
+      if (shouldTrack(name)) {
+        // httpStatus is set only for non-2xx responses (ApiError), so it's absent
+        // for network/CORS failures. errorMessage is truncated to fit Pendo's limits.
+        trackEvent("action-failed", {
+          action: name,
+          errorMessage: (e as Error).message?.slice(0, 100),
+          httpStatus: e instanceof ApiError ? e.status : undefined,
+        });
+      }
     }
   };
 
